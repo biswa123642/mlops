@@ -1,0 +1,106 @@
+name: Application Pipeline
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out the repo
+      uses: actions/checkout@v6
+      
+    - name: Docker Setup Buildx
+      uses: docker/setup-buildx-action@v3.0.0
+
+    - name: Docker Login
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ secrets.DOCKER_REGISTRY }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+      
+    - name: Backend Build And Push
+      uses: docker/build-push-action@v7
+      with:
+        context: ./backend
+        push: true
+        no-cache: true
+        tags: ${{ secrets.DOCKER_REGISTRY }}/backend:${{github.run_number}}
+
+    - name: Frontend Build And Push
+      uses: docker/build-push-action@v7
+      with:
+        context: ./frontend
+        push: true
+        no-cache: true
+        tags: ${{ secrets.DOCKER_REGISTRY }}/frontend:${{github.run_number}}
+
+
+  deploy:
+    needs:
+    - build
+
+    runs-on: ubuntu-latest
+  
+    steps:
+    - name: Check out the repo
+      uses: actions/checkout@v6
+
+    - name: Install Azure CLI
+      run: |
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+    - name: Login To Azure
+      run: |
+        echo "Logging into Azure with service principal..."
+        az login --service-principal \
+          --username ${{ secrets.AZURE_CLIENT_ID }} \
+          --password ${{ secrets.AZURE_CLIENT_SECRET }} \
+          --tenant ${{ secrets.AZURE_TENANT_ID }}
+        az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        echo "Azure login successful"
+
+    - name: Login To AKS
+      uses: azure/aks-set-context@v5
+      with:
+        resource-group: ${{ secrets.RESOURCE_GROUP }}
+        cluster-name: ${{ secrets.CLUSTER_NAME }}
+        admin: true
+
+    - name: Install Kustomize
+      uses: imranismail/setup-kustomize@v2
+
+    - name: Install Kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+    - name: Deploy Namespace
+      run: |
+        kubectl create namespace mlops --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy Secret 
+      working-directory: "K8s/secret"
+      run: |
+        kustomize build . | kubectl apply -f -
+        kubectl rollout restart deployment secrets -n mlops
+    
+    - name: Deploy Backend
+      working-directory: "K8s/backend"
+      run: |
+        kustomize edit set image backend=${{ secrets.DOCKER_REGISTRY }}/backend:${{github.run_number}}
+        kustomize build . | kubectl apply -f -
+        kubectl rollout status deployment/backend -n mlops --timeout=180s
+
+    - name: Deploy Frontend
+      working-directory: "K8s/frontend"
+      run: |
+        kustomize edit set image frontend=${{ secrets.DOCKER_REGISTRY }}/frontend:${{github.run_number}}
+        kustomize build . | kubectl apply -f -
+        kubectl rollout status deployment/frontend -n mlops --timeout=180s
