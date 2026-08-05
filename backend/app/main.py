@@ -105,10 +105,7 @@ async def predict(request: PredictionRequest):
             detail=f"KServe unreachable: {e}",
         )
 
-    predictions = result.get("predictions")
-    if predictions is None:
-        predictions = result.get("outputs")
-
+    predictions = result.get("predictions") or result.get("outputs")
     if predictions is None:
         raise HTTPException(
             status_code=500,
@@ -116,7 +113,6 @@ async def predict(request: PredictionRequest):
         )
 
     first = predictions[0]
-
     if isinstance(first, dict) and "data" in first:
         data = first["data"]
         first = data[0] if isinstance(data, list) else data
