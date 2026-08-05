@@ -1,8 +1,7 @@
 import React, { useState } from "react";
 import "./App.css";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 function App() {
   const [formData, setFormData] = useState({
@@ -12,11 +11,11 @@ function App() {
     contract_type: "Month-to-month",
     internet_service: "Fiber optic",
   });
+
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Handle input changes with correct type casting
   const handleChange = (event) => {
     const { name, value, type } = event.target;
     setFormData((prev) => ({
@@ -25,7 +24,6 @@ function App() {
     }));
   };
 
-  // Send prediction request to FastAPI
   const handleSubmit = async (event) => {
     event.preventDefault();
     setLoading(true);
@@ -42,14 +40,18 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`API request failed with status ${response.status}`);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(
+          errData.detail ||
+            `API request failed with status ${response.status}`
+        );
       }
 
       const data = await response.json();
       setResult(data);
     } catch (err) {
       console.error("Prediction error:", err);
-      setError("Unable to connect to the prediction backend.");
+      setError(err.message || "Unable to connect to the prediction backend.");
     } finally {
       setLoading(false);
     }
@@ -62,7 +64,6 @@ function App() {
         <p className="subtitle">Enter customer information to predict churn.</p>
 
         <form onSubmit={handleSubmit}>
-          {/* Tenure */}
           <div className="form-group">
             <label htmlFor="tenure">Tenure (Months)</label>
             <input
@@ -76,7 +77,6 @@ function App() {
             />
           </div>
 
-          {/* Monthly Charges */}
           <div className="form-group">
             <label htmlFor="monthly_charges">Monthly Charges ($)</label>
             <input
@@ -91,7 +91,6 @@ function App() {
             />
           </div>
 
-          {/* Support Calls */}
           <div className="form-group">
             <label htmlFor="support_calls">Support Calls</label>
             <input
@@ -105,7 +104,6 @@ function App() {
             />
           </div>
 
-          {/* Contract Type */}
           <div className="form-group">
             <label htmlFor="contract_type">Contract Type</label>
             <select
@@ -120,7 +118,6 @@ function App() {
             </select>
           </div>
 
-          {/* Internet Service */}
           <div className="form-group">
             <label htmlFor="internet_service">Internet Service</label>
             <select
@@ -135,21 +132,20 @@ function App() {
             </select>
           </div>
 
-          {/* Submit Button */}
           <button type="submit" disabled={loading}>
             {loading ? "Predicting..." : "Predict Churn"}
           </button>
         </form>
 
-        {/* Error Message */}
         {error && <div className="error-message">{error}</div>}
 
-        {/* Prediction Result */}
         {result && (
           <div className="result-card">
             <h2>Prediction Result</h2>
             <div className={`status-badge churn-${result.churn}`}>
-              {result.churn ? "High Risk: Likely to Churn" : "Low Risk: Unlikely to Churn"}
+              {result.churn
+                ? "High Risk: Likely to Churn"
+                : "Low Risk: Unlikely to Churn"}
             </div>
           </div>
         )}
