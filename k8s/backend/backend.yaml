@@ -22,7 +22,7 @@ spec:
             - containerPort: 8000
           env:
             - name: KSERVE_BASE_URL
-              value: "http://customer-churn-predictor-00001-private.mlops.svc.cluster.local:80"
+              value: "http://customer-churn.mlops.svc.cluster.local"
             - name: MODEL_NAME
               value: "customer-churn"
             - name: REQUEST_TIMEOUT
