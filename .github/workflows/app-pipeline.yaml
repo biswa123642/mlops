@@ -88,14 +88,14 @@ jobs:
         kubectl rollout restart deployment secrets -n mlops
     
     - name: Deploy Backend
-      working-directory: "K8s/backend"
+      working-directory: "k8s/backend"
       run: |
         kustomize edit set image backend=${{ secrets.DOCKER_REGISTRY }}/backend:${{github.run_number}}
         kustomize build . | kubectl apply -f -
         kubectl rollout status deployment/backend -n mlops --timeout=180s
 
     - name: Deploy Frontend
-      working-directory: "K8s/frontend"
+      working-directory: "k8s/frontend"
       run: |
         kustomize edit set image frontend=${{ secrets.DOCKER_REGISTRY }}/frontend:${{github.run_number}}
         kustomize build . | kubectl apply -f -
