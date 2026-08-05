@@ -4,218 +4,200 @@ from kfp.dsl import component
 
 def create_deploy_kserve_component(base_image: str):
 
-    @component(
-        base_image=base_image
-    )
+    @component(base_image=base_image)
     def deploy_kserve_component(
         mlflow_tracking_uri: str,
         registered_model_name: str,
         model_alias: str,
+        model_version: str,
+        model_artifact_uri: str,
         namespace: str,
         inference_service_name: str,
+        service_account_name: str,
+        kserve_secret_name: str,
+        mlflow_username: str = "",
+        mlflow_password: str = "",
+        azure_storage_account: str = "",
+        azure_storage_access_key: str = "",
     ):
-        import mlflow
-
-        from kubernetes import client
-        from kubernetes import config
-        from kubernetes.client.rest import ApiException
+        import os
+        from urllib.parse import urlparse
+        from kubernetes import client, config
 
         # ---------------------------------------------------------
-        # 1. Validate Inputs
+        # 1. Set Environment Variables (MLflow auth & Azure storage)
         # ---------------------------------------------------------
+        if mlflow_username and mlflow_password:
+            os.environ["MLFLOW_TRACKING_USERNAME"] = mlflow_username
+            os.environ["MLFLOW_TRACKING_PASSWORD"] = mlflow_password
 
-        if not mlflow_tracking_uri:
-            raise ValueError(
-                "MLflow Tracking URI is required."
-            )
-
-        if not registered_model_name:
-            raise ValueError(
-                "Registered model name is required."
-            )
-
-        if not model_alias:
-            raise ValueError(
-                "MLflow model alias is required."
-            )
-
-        if not namespace:
-            raise ValueError(
-                "Kubernetes namespace is required."
-            )
-
-        if not inference_service_name:
-            raise ValueError(
-                "KServe InferenceService name is required."
-            )
+        if azure_storage_account and azure_storage_access_key:
+            os.environ["AZURE_STORAGE_ACCOUNT"] = azure_storage_account
+            os.environ["AZURE_STORAGE_ACCESS_KEY"] = azure_storage_access_key
 
         # ---------------------------------------------------------
-        # 2. Configure MLflow
+        # 2. Convert MLflow wasbs:// URI to KServe-compatible https:// URI
+        #    Example:
+        #      wasbs://mlops@mlstoregs.blob.core.windows.net/1/.../artifacts/model
+        #    -> https://mlstoregs.blob.core.windows.net/mlops/1/.../artifacts/model
         # ---------------------------------------------------------
+        kserve_storage_uri = model_artifact_uri
+        if model_artifact_uri.startswith("wasbs://"):
+            parsed = urlparse(model_artifact_uri)
+            # parsed.netloc: "mlops@mlstoregs.blob.core.windows.net"
+            container_and_host = parsed.netloc.split("@")
+            if len(container_and_host) == 2:
+                container = container_and_host[0]
+                host = container_and_host[1]  # "mlstoregs.blob.core.windows.net"
+                path = parsed.path.lstrip("/")  # "1/.../artifacts/model"
+                kserve_storage_uri = f"https://{host}/{container}/{path}"
+            else:
+                raise ValueError(
+                    f"Unexpected wasbs URI format for model_artifact_uri: {model_artifact_uri}"
+                )
 
-        mlflow.set_tracking_uri(
-            mlflow_tracking_uri
-        )
-
-        client_mlflow = (
-            mlflow.tracking.MlflowClient()
-        )
-
-        # ---------------------------------------------------------
-        # 3. Resolve Model from MLflow Alias
-        # ---------------------------------------------------------
-
-        print(
-            "======================================"
-        )
-
-        print(
-            "Resolving MLflow Model"
-        )
-
-        print(
-            f"Model Name : "
-            f"{registered_model_name}"
-        )
-
-        print(
-            f"Model Alias: "
-            f"{model_alias}"
-        )
-
-        print(
-            "======================================"
-        )
-
-        model_version = (
-            client_mlflow
-            .get_model_version_by_alias(
-                name=registered_model_name,
-                alias=model_alias,
-            )
-        )
-
-        model_version_number = (
-            model_version.version
-        )
-
-        artifact_uri = (
-            model_version.source
-        )
-
-        print(
-            f"Resolved Model Version: "
-            f"{model_version_number}"
-        )
-
-        print(
-            f"Model Artifact URI: "
-            f"{artifact_uri}"
-        )
+        print("======================================")
+        print("Deploying Model to KServe")
+        print(f"InferenceService Name : {inference_service_name}")
+        print(f"Namespace              : {namespace}")
+        print(f"Service Account        : {service_account_name}")
+        print(f"Storage Secret         : {kserve_secret_name}")
+        print(f"Model Name             : {registered_model_name}")
+        print(f"Model Version          : {model_version}")
+        print(f"Model Alias            : {model_alias}")
+        print(f"MLflow Artifact URI    : {model_artifact_uri}")
+        print(f"KServe Storage URI     : {kserve_storage_uri}")
+        print("======================================")
 
         # ---------------------------------------------------------
-        # 4. Load Kubernetes Configuration
+        # 3. Initialize In-Cluster Kubernetes Client
         # ---------------------------------------------------------
-
         try:
-
             config.load_incluster_config()
-
-            print(
-                "Using in-cluster Kubernetes configuration."
-            )
-
-        except Exception:
-
+        except config.ConfigException:
             config.load_kube_config()
 
-            print(
-                "Using local Kubernetes configuration."
+        core_api = client.CoreV1Api()
+        custom_api = client.CustomObjectsApi()
+
+        # ---------------------------------------------------------
+        # 4. Dynamic Secret & ServiceAccount Provisioning
+        #    (Requires RBAC allowing default-editor to manage
+        #     secrets & serviceaccounts in the target namespace)
+        # ---------------------------------------------------------
+        if azure_storage_account and azure_storage_access_key:
+            secret_manifest = client.V1Secret(
+                api_version="v1",
+                kind="Secret",
+                metadata=client.V1ObjectMeta(
+                    name=kserve_secret_name,
+                    namespace=namespace,
+                ),
+                type="Opaque",
+                string_data={
+                    "AZURE_STORAGE_ACCESS_KEY": azure_storage_access_key,
+                },
             )
 
-        # ---------------------------------------------------------
-        # 5. Kubernetes Custom Objects API
-        # ---------------------------------------------------------
-
-        api = client.CustomObjectsApi()
-
-        group = "serving.kserve.io"
-
-        version = "v1beta1"
-
-        plural = "inferenceservices"
-
-        # ---------------------------------------------------------
-        # 6. KServe InferenceService Definition
-        # ---------------------------------------------------------
-
-        inference_service = {
-
-            "apiVersion":
-                "serving.kserve.io/v1beta1",
-
-            "kind":
-                "InferenceService",
-
-            "metadata": {
-
-                "name":
-                    inference_service_name,
-
-                "namespace":
+            try:
+                core_api.read_namespaced_secret(kserve_secret_name, namespace)
+                core_api.replace_namespaced_secret(
+                    kserve_secret_name,
                     namespace,
+                    secret_manifest,
+                )
+                print(
+                    f"Updated Secret '{kserve_secret_name}' in namespace '{namespace}'."
+                )
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    core_api.create_namespaced_secret(namespace, secret_manifest)
+                    print(
+                        f"Created Secret '{kserve_secret_name}' in namespace '{namespace}'."
+                    )
+                else:
+                    raise RuntimeError(f"Failed to manage secret: {e}") from e
 
-                "labels": {
-
-                    "app":
-                        inference_service_name,
-
-                    "model":
-                        registered_model_name,
-
-                    "mlflow-model-version":
-                        str(
-                            model_version_number
+            try:
+                sa = core_api.read_namespaced_service_account(
+                    service_account_name,
+                    namespace,
+                )
+                secret_names = [
+                    s.name for s in (sa.secrets or []) if s.name is not None
+                ]
+                if kserve_secret_name not in secret_names:
+                    sa.secrets = (sa.secrets or []) + [
+                        client.V1ObjectReference(name=kserve_secret_name)
+                    ]
+                    core_api.replace_namespaced_service_account(
+                        service_account_name,
+                        namespace,
+                        sa,
+                    )
+                    print(
+                        f"Attached secret '{kserve_secret_name}' to ServiceAccount '{service_account_name}'."
+                    )
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    sa_manifest = client.V1ServiceAccount(
+                        metadata=client.V1ObjectMeta(
+                            name=service_account_name,
+                            namespace=namespace,
                         ),
+                        secrets=[
+                            client.V1ObjectReference(name=kserve_secret_name)
+                        ],
+                    )
+                    core_api.create_namespaced_service_account(
+                        namespace,
+                        sa_manifest,
+                    )
+                    print(
+                        f"Created ServiceAccount '{service_account_name}' with secret '{kserve_secret_name}'."
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Failed to manage service account: {e}"
+                    ) from e
 
-                    "mlflow-model-alias":
-                        model_alias,
-
+        # ---------------------------------------------------------
+        # 5. Construct KServe InferenceService CRD Spec
+        # ---------------------------------------------------------
+        isvc_manifest = {
+            "apiVersion": "serving.kserve.io/v1beta1",
+            "kind": "InferenceService",
+            "metadata": {
+                "name": inference_service_name,
+                "namespace": namespace,
+                "labels": {
+                    "app": inference_service_name,
+                    "model-version": str(model_version),
                 },
-
             },
-
             "spec": {
-
                 "predictor": {
-
+                    "serviceAccountName": service_account_name,
                     "model": {
-
                         "modelFormat": {
-
-                            "name":
-                                "sklearn",
-
+                            "name": "sklearn",
                         },
-
-                        "storageUri":
-                            artifact_uri,
-
+                        "storageUri": kserve_storage_uri,
                     },
-
-                },
-
+                }
             },
-
         }
 
         # ---------------------------------------------------------
-        # 7. Create or Update KServe InferenceService
+        # 6. Apply or Update InferenceService
+        #    (Requires RBAC for inferenceservices.serving.kserve.io)
         # ---------------------------------------------------------
+        group = "serving.kserve.io"
+        version = "v1beta1"
+        plural = "inferenceservices"
 
         try:
-
-            api.get_namespaced_custom_object(
+            existing_isvc = custom_api.get_namespaced_custom_object(
                 group=group,
                 version=version,
                 namespace=namespace,
@@ -223,95 +205,38 @@ def create_deploy_kserve_component(base_image: str):
                 name=inference_service_name,
             )
 
-            print(
-                "Existing KServe "
-                "InferenceService found."
-            )
-
-            api.patch_namespaced_custom_object(
+            isvc_manifest["metadata"]["resourceVersion"] = existing_isvc["metadata"][
+                "resourceVersion"
+            ]
+            custom_api.replace_namespaced_custom_object(
                 group=group,
                 version=version,
                 namespace=namespace,
                 plural=plural,
                 name=inference_service_name,
-                body=inference_service,
+                body=isvc_manifest,
             )
+            print(f"Successfully updated InferenceService '{inference_service_name}'.")
 
-            print(
-                "KServe InferenceService "
-                "updated successfully."
-            )
-
-        except ApiException as exception:
-
-            if exception.status == 404:
-
-                api.create_namespaced_custom_object(
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                custom_api.create_namespaced_custom_object(
                     group=group,
                     version=version,
                     namespace=namespace,
                     plural=plural,
-                    body=inference_service,
+                    body=isvc_manifest,
                 )
-
                 print(
-                    "KServe InferenceService "
-                    "created successfully."
+                    f"Successfully created InferenceService '{inference_service_name}'."
                 )
-
             else:
-
                 raise RuntimeError(
-                    "Failed to create or update "
-                    "KServe InferenceService. "
-                    f"Status: {exception.status}, "
-                    f"Reason: {exception.reason}"
-                )
+                    f"Failed to deploy InferenceService to KServe: {e}"
+                ) from e
 
-        # ---------------------------------------------------------
-        # 8. Deployment Information
-        # ---------------------------------------------------------
-
-        print(
-            "======================================"
-        )
-
-        print(
-            "KSERVE DEPLOYMENT COMPLETED"
-        )
-
-        print(
-            f"InferenceService : "
-            f"{inference_service_name}"
-        )
-
-        print(
-            f"Namespace         : "
-            f"{namespace}"
-        )
-
-        print(
-            f"Model             : "
-            f"{registered_model_name}"
-        )
-
-        print(
-            f"MLflow Alias      : "
-            f"{model_alias}"
-        )
-
-        print(
-            f"Model Version     : "
-            f"{model_version_number}"
-        )
-
-        print(
-            f"Artifact URI      : "
-            f"{artifact_uri}"
-        )
-
-        print(
-            "======================================"
-        )
+        print("======================================")
+        print("KSERVE DEPLOYMENT TRIGGERED SUCCESSFULLY")
+        print("======================================")
 
     return deploy_kserve_component

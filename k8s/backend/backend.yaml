@@ -21,10 +21,15 @@ spec:
           ports:
             - containerPort: 8000
           env:
-          - name: MLFLOW_TRACKING_URI
-            value: "YOUR_MLFLOW_TRACKING_URI"
-          - name: MODEL_URI
-            value: "models:/customer-churn-model@Production"
+            - name: KSERVE_BASE_URL
+              value: "http://customer-churn-predictor-00001-private.mlops.svc.cluster.local:80"
+            - name: MODEL_NAME
+              value: "customer-churn"
+            - name: REQUEST_TIMEOUT
+              value: "10"
+            - name: CORS_ORIGINS
+              value: "https://mlops.altudo.net"
+
           resources:
             requests:
               cpu: "100m"
@@ -32,15 +37,17 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+
           readinessProbe:
             httpGet:
-              path: /docs
+              path: /health
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 10
+
           livenessProbe:
             httpGet:
-              path: /docs
+              path: /health
               port: 8000
             initialDelaySeconds: 30
             periodSeconds: 20

@@ -10,13 +10,13 @@ permissions:
 jobs:
   ml-pipeline:
     name: Train, Evaluate and Deploy ML Model
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     env:
-      AZURE_STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
-      AZURE_STORAGE_CONTAINER: ${{ secrets.AZURE_STORAGE_CONTAINER }}
+      AZURE_STORAGE_ACCOUNT: mlstoregs
+      AZURE_STORAGE_CONTAINER: mlops
       DATASET_NAME: customer_churn.csv
-      MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_URI: "http://mlflow-mlflow.mlflow.svc.cluster.local:5000"
       MLFLOW_EXPERIMENT: customer-churn
       REGISTERED_MODEL_NAME: customer-churn-model
       MODEL_ALIAS: Production
@@ -41,6 +41,32 @@ jobs:
     - name: Docker Setup Buildx
       uses: docker/setup-buildx-action@v3.0.0
 
+    - name: Install Azure CLI
+      run: |
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+    - name: Install Kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+    - name: Login To Azure
+      run: |
+        echo "Logging into Azure with service principal..."
+        az login --service-principal \
+          --username ${{ secrets.AZURE_CLIENT_ID }} \
+          --password ${{ secrets.AZURE_CLIENT_SECRET }} \
+          --tenant ${{ secrets.AZURE_TENANT_ID }}
+        az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        echo "Azure login successful"
+
+    - name: Login To AKS
+      uses: azure/aks-set-context@v5
+      with:
+        resource-group: ${{ secrets.RESOURCE_GROUP }}
+        cluster-name: ${{ secrets.CLUSTER_NAME }}
+        admin: true
+
     - name: Docker Login
       uses: docker/login-action@v4
       with:
@@ -61,6 +87,11 @@ jobs:
       run: |
         echo "ML_PIPELINE_BASE_IMAGE=${{ secrets.DOCKER_REGISTRY }}/mlflow:${{ github.run_number }}" >> "$GITHUB_ENV"
 
+    - name: Deploy RBAC
+      working-directory: pipeline
+      run: |
+        kubectl apply -f rbac.yaml
+  
     - name: Install Dependencies
       shell: bash
       working-directory: pipeline

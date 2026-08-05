@@ -8,6 +8,8 @@
   --border-color: #ccc;
   --error-bg: #f8d7da;
   --error-text: #842029;
+  --success-bg: #d1e7dd;
+  --success-text: #0f5132;
   --border-radius: 6px;
   --transition: background-color 0.2s ease, border-color 0.2s ease;
 }
@@ -103,6 +105,19 @@ button:hover {
 button:disabled {
   background-color: #999;
   cursor: not-allowed;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 /* Feedback & Results */
@@ -124,6 +139,29 @@ button:disabled {
   color: var(--primary-color);
 }
 
+/* Dynamic Churn Result Badges */
+.status-badge {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 10px 20px;
+  font-size: 18px;
+  font-weight: bold;
+  border-radius: var(--border-radius);
+}
+
+.status-badge.churn-true {
+  background-color: var(--error-bg);
+  color: var(--error-text);
+  border: 1px solid #f5c2c7;
+}
+
+.status-badge.churn-false {
+  background-color: var(--success-bg);
+  color: var(--success-text);
+  border: 1px solid #badbcc;
+}
+
+/* Error Alert Box */
 .error-message {
   margin-top: 20px;
   padding: 15px;
