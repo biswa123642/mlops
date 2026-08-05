@@ -8,8 +8,8 @@ function App() {
     tenure: 12,
     monthly_charges: 80.5,
     support_calls: 2,
-    contract_type: "Month-to-month",
-    internet_service: "Fiber optic",
+    contract_type: 0,
+    internet_service: 2,
   });
 
   const [result, setResult] = useState(null);
@@ -20,7 +20,7 @@ function App() {
     const { name, value, type } = event.target;
     setFormData((prev) => ({
       ...prev,
-      [name]: type === "number" ? Number(value) : value,
+      [name]: type === "number" ? Number(value) : Number(value),
     }));
   };
 
@@ -42,8 +42,7 @@ function App() {
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(
-          errData.detail ||
-            `API request failed with status ${response.status}`
+          errData.detail || `API request failed with status ${response.status}`
         );
       }
 
@@ -112,9 +111,9 @@ function App() {
               value={formData.contract_type}
               onChange={handleChange}
             >
-              <option value="Month-to-month">Month-to-Month</option>
-              <option value="One year">One Year</option>
-              <option value="Two year">Two Year</option>
+              <option value={0}>Month-to-month</option>
+              <option value={1}>One Year</option>
+              <option value={2}>Two Year</option>
             </select>
           </div>
 
@@ -126,9 +125,9 @@ function App() {
               value={formData.internet_service}
               onChange={handleChange}
             >
-              <option value="No">No Internet</option>
-              <option value="DSL">DSL</option>
-              <option value="Fiber optic">Fiber Optic</option>
+              <option value={0}>No Internet</option>
+              <option value={1}>DSL</option>
+              <option value={2}>Fiber Optic</option>
             </select>
           </div>
 
