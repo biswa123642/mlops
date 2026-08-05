@@ -77,13 +77,15 @@ async def predict(request: PredictionRequest):
         raise HTTPException(status_code=503, detail="Service not ready.")
 
     payload = {
-        "instances": [[
-            request.tenure,
-            request.monthly_charges,
-            request.support_calls,
-            request.contract_type,
-            request.internet_service,
-        ]]
+        "instances": [
+            [
+                request.tenure,
+                request.monthly_charges,
+                request.support_calls,
+                request.contract_type,
+                request.internet_service,
+            ]
+        ]
     }
 
     try:
