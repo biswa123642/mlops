@@ -8,40 +8,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import PredictionRequest, PredictionResponse
 
 
-# ============================================================
-# Configuration
-# ============================================================
-
 KSERVE_BASE_URL = os.getenv(
     "KSERVE_BASE_URL",
     "http://customer-churn.mlops.svc.cluster.local",
 )
-
 MODEL_NAME = os.getenv("MODEL_NAME", "customer-churn")
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10.0"))
 
-CORS_ORIGINS_RAW = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:5173",
-)
-
-CORS_ORIGINS = [
-    origin.strip()
-    for origin in CORS_ORIGINS_RAW.split(",")
-    if origin.strip()
-]
-
-
-# ============================================================
-# Global HTTP client
-# ============================================================
+CORS_ORIGINS_RAW = os.getenv("CORS_ORIGINS", "http://localhost:5173")
+CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
 
 http_client: httpx.AsyncClient | None = None
 
-
-# ============================================================
-# Lifespan Context Manager
-# ============================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,10 +28,6 @@ async def lifespan(app: FastAPI):
     yield
     await http_client.aclose()
 
-
-# ============================================================
-# FastAPI Application Initialization
-# ============================================================
 
 app = FastAPI(
     title="Customer Churn Prediction API",
@@ -71,19 +45,10 @@ app.add_middleware(
 )
 
 
-# ============================================================
-# Health Check Endpoint
-# ============================================================
-
 @app.get("/health")
 async def health_check():
-    """Check whether the API is running and KServe is reachable."""
     if http_client is None:
-        return {
-            "status": "error",
-            "model_loaded": False,
-            "error": "HTTP client not ready.",
-        }
+        return {"status": "error", "model_loaded": False, "error": "HTTP client not ready."}
 
     try:
         resp = await http_client.get(f"{KSERVE_BASE_URL}/v1/models/{MODEL_NAME}")
@@ -95,24 +60,15 @@ async def health_check():
             "kserve_url": KSERVE_BASE_URL,
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "model_loaded": False,
-            "error": str(e),
-        }
+        return {"status": "error", "model_loaded": False, "error": str(e)}
 
-
-# ============================================================
-# Prediction Endpoint
-# ============================================================
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
-    """Predict whether a customer will churn via KServe."""
     if http_client is None:
         raise HTTPException(status_code=503, detail="Service not ready.")
 
-    input_data = {
+    payload = {
         "instances": [
             {
                 "tenure": request.tenure,
@@ -127,34 +83,20 @@ async def predict(request: PredictionRequest):
     try:
         resp = await http_client.post(
             f"{KSERVE_BASE_URL}/v1/models/{MODEL_NAME}:predict",
-            json=input_data,
+            json=payload,
         )
         resp.raise_for_status()
         result = resp.json()
-        print("KServe raw response:", result)
     except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=e.response.status_code,
-            detail=f"KServe prediction failed: {e.response.text}",
-        )
+        raise HTTPException(status_code=e.response.status_code, detail=f"KServe prediction failed: {e.response.text}")
     except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"KServe unreachable: {e}",
-        )
+        raise HTTPException(status_code=503, detail=f"KServe unreachable: {e}")
 
-    predictions = result.get("predictions")
+    predictions = result.get("predictions") or result.get("outputs")
     if predictions is None:
-        predictions = result.get("outputs")
-
-    if predictions is None:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected KServe response format: {result}",
-        )
+        raise HTTPException(status_code=500, detail=f"Unexpected KServe response format: {result}")
 
     first = predictions[0]
-
     if isinstance(first, dict) and "data" in first:
         data = first["data"]
         first = data[0] if isinstance(data, list) else data
@@ -164,10 +106,7 @@ async def predict(request: PredictionRequest):
     try:
         prediction_value = int(first)
     except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to parse prediction from KServe response: {result}",
-        )
+        raise HTTPException(status_code=500, detail=f"Unable to parse prediction from KServe response: {result}")
 
     return PredictionResponse(
         prediction=prediction_value,
