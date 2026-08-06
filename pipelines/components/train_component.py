@@ -1,11 +1,8 @@
 from typing import NamedTuple
-from kfp import dsl
 from kfp.dsl import component
 
 
-def create_train_component(
-    base_image: str,
-):
+def create_train_component(base_image: str):
     @component(base_image=base_image)
     def train_component(
         azure_storage_account: str,
@@ -42,33 +39,19 @@ def create_train_component(
         )
         from sklearn.model_selection import train_test_split
 
-        # =========================================================
-        # 1. Validate Core Inputs
-        # =========================================================
         if not azure_storage_account:
             raise ValueError("Azure Storage Account name is required.")
-
         if not azure_storage_container:
             raise ValueError("Azure Storage Container name is required.")
-
         if not dataset_name:
             raise ValueError("Dataset name is required.")
-
         if not mlflow_tracking_uri:
             raise ValueError("MLflow Tracking URI is required.")
-
         if not experiment_name:
             raise ValueError("MLflow Experiment Name is required.")
-
-        # Access key is required now (no DefaultAzureCredential fallback)
         if not azure_storage_access_key:
-            raise ValueError(
-                "Azure Storage Access Key is required for dataset download."
-            )
+            raise ValueError("Azure Storage Access Key is required for dataset download.")
 
-        # =========================================================
-        # 2. Configure Environment (MLflow Auth & Azure Storage)
-        # =========================================================
         if mlflow_username and mlflow_password:
             os.environ["MLFLOW_TRACKING_USERNAME"] = mlflow_username
             os.environ["MLFLOW_TRACKING_PASSWORD"] = mlflow_password
@@ -76,9 +59,6 @@ def create_train_component(
         os.environ["AZURE_STORAGE_ACCOUNT"] = azure_storage_account
         os.environ["AZURE_STORAGE_ACCESS_KEY"] = azure_storage_access_key
 
-        # =========================================================
-        # 3. Download Dataset from Azure Blob Storage
-        # =========================================================
         blob_url = (
             f"https://{azure_storage_account}.blob.core.windows.net/"
             f"{azure_storage_container}/{dataset_name}"
@@ -90,19 +70,15 @@ def create_train_component(
         print("======================================")
 
         try:
-            # Always use access key; no DefaultAzureCredential
             blob_client = BlobClient.from_blob_url(
                 blob_url=blob_url,
                 credential=azure_storage_access_key,
             )
-
             download_stream = blob_client.download_blob()
             data_bytes = download_stream.readall()
             dataframe = pd.read_csv(io.BytesIO(data_bytes))
-
             print("Dataset downloaded successfully.")
             print(f"Dataset Shape: {dataframe.shape}")
-
         except Exception as exception:
             raise RuntimeError(
                 f"Failed to download dataset from Azure Blob Storage. Error: {exception}"
@@ -111,24 +87,44 @@ def create_train_component(
         if dataframe.empty:
             raise ValueError("Downloaded dataset is empty.")
 
-        # =========================================================
-        # 4. Prepare Features and Target
-        # =========================================================
         target_column = "churn"
+        required_columns = [
+            "tenure",
+            "monthly_charges",
+            "support_calls",
+            "contract_type",
+            "internet_service",
+            "churn",
+        ]
 
-        if target_column not in dataframe.columns:
-            raise ValueError(f"Target column '{target_column}' not found in dataset.")
+        missing_columns = [col for col in required_columns if col not in dataframe.columns]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
 
-        X = dataframe.drop(columns=[target_column])
+        dataframe = dataframe[required_columns].copy()
+
+        for col in [
+            "tenure",
+            "monthly_charges",
+            "support_calls",
+            "contract_type",
+            "internet_service",
+            "churn",
+        ]:
+            dataframe[col] = pd.to_numeric(dataframe[col], errors="coerce")
+
+        if dataframe.isnull().any().any():
+            raise ValueError("Dataset contains invalid or non-numeric values after conversion.")
+
+        X = dataframe[
+            ["tenure", "monthly_charges", "support_calls", "contract_type", "internet_service"]
+        ]
         y = dataframe[target_column]
-
-        # One-hot encode categorical features if present
-        X = pd.get_dummies(X, drop_first=True)
 
         X_train, X_test, y_train, y_test = train_test_split(
             X,
             y,
-            test_size=0.2,
+            test_size=0.20,
             random_state=42,
             stratify=y if len(y.unique()) > 1 else None,
         )
@@ -139,15 +135,9 @@ def create_train_component(
         print(f"Test Shape  : {X_test.shape}")
         print("======================================")
 
-        # =========================================================
-        # 5. Configure MLflow Tracking
-        # =========================================================
         mlflow.set_tracking_uri(mlflow_tracking_uri)
         mlflow.set_experiment(experiment_name)
 
-        # =========================================================
-        # 6. Model Training & Evaluation inside MLflow Run
-        # =========================================================
         print("Starting MLflow Run...")
 
         with mlflow.start_run() as run:
@@ -156,19 +146,17 @@ def create_train_component(
             print("======================================")
             print("MLflow Training Started")
             print(f"Experiment : {experiment_name}")
-            print(f"Run ID     : {run_id}")
+            print(f"Run ID      : {run_id}")
             print("======================================")
 
             n_estimators = 100
             max_depth = 10
             random_state = 42
 
-            # Log Hyperparameters
             mlflow.log_param("n_estimators", n_estimators)
             mlflow.log_param("max_depth", max_depth)
             mlflow.log_param("random_state", random_state)
 
-            # Train Model
             model = RandomForestClassifier(
                 n_estimators=n_estimators,
                 max_depth=max_depth,
@@ -176,16 +164,13 @@ def create_train_component(
             )
             model.fit(X_train, y_train)
 
-            # Make Predictions
             y_pred = model.predict(X_test)
 
-            # Calculate Evaluation Metrics
             accuracy = float(accuracy_score(y_test, y_pred))
             precision = float(precision_score(y_test, y_pred, zero_division=0))
             recall = float(recall_score(y_test, y_pred, zero_division=0))
             f1 = float(f1_score(y_test, y_pred, zero_division=0))
 
-            # Log Metrics to MLflow
             mlflow.log_metric("accuracy", accuracy)
             mlflow.log_metric("precision", precision)
             mlflow.log_metric("recall", recall)
@@ -195,11 +180,10 @@ def create_train_component(
             print("Model Evaluation Results")
             print(f"Accuracy  : {accuracy:.4f}")
             print(f"Precision : {precision:.4f}")
-            print(f"Recall    : {recall:.4f}")
-            print(f"F1 Score  : {f1:.4f}")
+            print(f"Recall     : {recall:.4f}")
+            print(f"F1 Score   : {f1:.4f}")
             print("======================================")
 
-            # Log Model Artifact
             mlflow.sklearn.log_model(
                 sk_model=model,
                 artifact_path="model",
@@ -212,9 +196,6 @@ def create_train_component(
         print(f"Run ID : {run_id}")
         print("======================================")
 
-        # =========================================================
-        # 7. Return Outputs via NamedTuple
-        # =========================================================
         return (run_id, accuracy, precision, recall, f1)
 
     return train_component

@@ -1,4 +1,3 @@
-from kfp import dsl
 from kfp.dsl import component
 
 
@@ -24,9 +23,6 @@ def create_deploy_kserve_component(base_image: str):
         from urllib.parse import urlparse
         from kubernetes import client, config
 
-        # ---------------------------------------------------------
-        # 1. Set Environment Variables (MLflow auth & Azure storage)
-        # ---------------------------------------------------------
         if mlflow_username and mlflow_password:
             os.environ["MLFLOW_TRACKING_USERNAME"] = mlflow_username
             os.environ["MLFLOW_TRACKING_PASSWORD"] = mlflow_password
@@ -35,21 +31,14 @@ def create_deploy_kserve_component(base_image: str):
             os.environ["AZURE_STORAGE_ACCOUNT"] = azure_storage_account
             os.environ["AZURE_STORAGE_ACCESS_KEY"] = azure_storage_access_key
 
-        # ---------------------------------------------------------
-        # 2. Convert MLflow wasbs:// URI to KServe-compatible https:// URI
-        #    Example:
-        #      wasbs://mlops@mlstoregs.blob.core.windows.net/1/.../artifacts/model
-        #    -> https://mlstoregs.blob.core.windows.net/mlops/1/.../artifacts/model
-        # ---------------------------------------------------------
         kserve_storage_uri = model_artifact_uri
         if model_artifact_uri.startswith("wasbs://"):
             parsed = urlparse(model_artifact_uri)
-            # parsed.netloc: "mlops@mlstoregs.blob.core.windows.net"
             container_and_host = parsed.netloc.split("@")
             if len(container_and_host) == 2:
                 container = container_and_host[0]
-                host = container_and_host[1]  # "mlstoregs.blob.core.windows.net"
-                path = parsed.path.lstrip("/")  # "1/.../artifacts/model"
+                host = container_and_host[1]
+                path = parsed.path.lstrip("/")
                 kserve_storage_uri = f"https://{host}/{container}/{path}"
             else:
                 raise ValueError(
@@ -59,19 +48,16 @@ def create_deploy_kserve_component(base_image: str):
         print("======================================")
         print("Deploying Model to KServe")
         print(f"InferenceService Name : {inference_service_name}")
-        print(f"Namespace              : {namespace}")
-        print(f"Service Account        : {service_account_name}")
-        print(f"Storage Secret         : {kserve_secret_name}")
-        print(f"Model Name             : {registered_model_name}")
-        print(f"Model Version          : {model_version}")
-        print(f"Model Alias            : {model_alias}")
-        print(f"MLflow Artifact URI    : {model_artifact_uri}")
-        print(f"KServe Storage URI     : {kserve_storage_uri}")
+        print(f"Namespace             : {namespace}")
+        print(f"Service Account       : {service_account_name}")
+        print(f"Storage Secret        : {kserve_secret_name}")
+        print(f"Model Name            : {registered_model_name}")
+        print(f"Model Version         : {model_version}")
+        print(f"Model Alias           : {model_alias}")
+        print(f"MLflow Artifact URI   : {model_artifact_uri}")
+        print(f"KServe Storage URI    : {kserve_storage_uri}")
         print("======================================")
 
-        # ---------------------------------------------------------
-        # 3. Initialize In-Cluster Kubernetes Client
-        # ---------------------------------------------------------
         try:
             config.load_incluster_config()
         except config.ConfigException:
@@ -80,11 +66,6 @@ def create_deploy_kserve_component(base_image: str):
         core_api = client.CoreV1Api()
         custom_api = client.CustomObjectsApi()
 
-        # ---------------------------------------------------------
-        # 4. Dynamic Secret & ServiceAccount Provisioning
-        #    (Requires RBAC allowing default-editor to manage
-        #     secrets & serviceaccounts in the target namespace)
-        # ---------------------------------------------------------
         if azure_storage_account and azure_storage_access_key:
             secret_manifest = client.V1Secret(
                 api_version="v1",
@@ -106,15 +87,11 @@ def create_deploy_kserve_component(base_image: str):
                     namespace,
                     secret_manifest,
                 )
-                print(
-                    f"Updated Secret '{kserve_secret_name}' in namespace '{namespace}'."
-                )
+                print(f"Updated Secret '{kserve_secret_name}' in namespace '{namespace}'.")
             except client.exceptions.ApiException as e:
                 if e.status == 404:
                     core_api.create_namespaced_secret(namespace, secret_manifest)
-                    print(
-                        f"Created Secret '{kserve_secret_name}' in namespace '{namespace}'."
-                    )
+                    print(f"Created Secret '{kserve_secret_name}' in namespace '{namespace}'.")
                 else:
                     raise RuntimeError(f"Failed to manage secret: {e}") from e
 
@@ -123,9 +100,7 @@ def create_deploy_kserve_component(base_image: str):
                     service_account_name,
                     namespace,
                 )
-                secret_names = [
-                    s.name for s in (sa.secrets or []) if s.name is not None
-                ]
+                secret_names = [s.name for s in (sa.secrets or []) if s.name is not None]
                 if kserve_secret_name not in secret_names:
                     sa.secrets = (sa.secrets or []) + [
                         client.V1ObjectReference(name=kserve_secret_name)
@@ -161,9 +136,6 @@ def create_deploy_kserve_component(base_image: str):
                         f"Failed to manage service account: {e}"
                     ) from e
 
-        # ---------------------------------------------------------
-        # 5. Construct KServe InferenceService CRD Spec
-        # ---------------------------------------------------------
         isvc_manifest = {
             "apiVersion": "serving.kserve.io/v1beta1",
             "kind": "InferenceService",
@@ -188,10 +160,6 @@ def create_deploy_kserve_component(base_image: str):
             },
         }
 
-        # ---------------------------------------------------------
-        # 6. Apply or Update InferenceService
-        #    (Requires RBAC for inferenceservices.serving.kserve.io)
-        # ---------------------------------------------------------
         group = "serving.kserve.io"
         version = "v1beta1"
         plural = "inferenceservices"
