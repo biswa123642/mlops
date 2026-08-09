@@ -28,9 +28,9 @@ spec:
         - name: REQUEST_TIMEOUT
           value: "30"
         - name: AZURE_ML_ENDPOINT
-          value: ""
+          value: "https://ml.altudo.net/api/v1/endpoint/customer-churn-endpoint/score"
         - name: AZURE_ML_API_KEY
-          value: ""
+          value: "2mi7ZIDiVVOv0kcSJK0qbZvUTNGpLm2DHyHdLQLEKiVl79iUrG0kJQQJ99CHAAAAAAAAAAAAINFRAZML1eS8"
         - name: ALLOWED_ORIGINS
           value: "https://mlops.altudo.net"
         resources:
