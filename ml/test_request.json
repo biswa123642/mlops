@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "tenure": 12,
+      "monthly_charges": 80.5,
+      "support_calls": 2,
+      "contract_type": 0,
+      "internet_service": 1
+    }
+  ]
+}

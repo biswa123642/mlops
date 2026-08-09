@@ -1,69 +1,56 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class PredictionRequest(BaseModel):
-    """Input data required for customer churn prediction."""
+class ChurnPredictionRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid"
+    )
 
     tenure: int = Field(
         ...,
-        description="Number of months the customer has been with the company.",
         ge=0,
+        description="Customer tenure in months",
     )
+
     monthly_charges: float = Field(
         ...,
-        description="Customer's monthly charges.",
-        ge=0.0,
+        ge=0,
+        description="Customer monthly charges",
     )
+
     support_calls: int = Field(
         ...,
-        description="Number of support calls made by the customer.",
         ge=0,
+        description="Number of customer support calls",
     )
+
     contract_type: int = Field(
         ...,
-        description="Encoded contract type as a numeric value.",
         ge=0,
+        le=2,
+        description="Encoded contract type: 0, 1, or 2",
     )
+
     internet_service: int = Field(
         ...,
-        description="Encoded internet service type as a numeric value.",
         ge=0,
+        le=1,
+        description="Encoded internet service: 0 or 1",
     )
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "tenure": 12,
-                    "monthly_charges": 65.5,
-                    "support_calls": 2,
-                    "contract_type": 0,
-                    "internet_service": 1,
-                }
-            ]
-        }
-    }
 
-
-class PredictionResponse(BaseModel):
-    """Response returned by the prediction API."""
-
-    prediction: int = Field(
+class ChurnPredictionResponse(BaseModel):
+    prediction: list[int] = Field(
         ...,
-        description="Predicted churn class. 0 means no churn and 1 means churn.",
-    )
-    churn: bool = Field(
-        ...,
-        description="Whether the customer is predicted to churn.",
+        description="Predicted churn class",
     )
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "prediction": 1,
-                    "churn": True,
-                }
-            ]
-        }
-    }
+    probability: list[list[float]] = Field(
+        ...,
+        description="Probability for each model class",
+    )
+
+    churn_probability: list[float] = Field(
+        ...,
+        description="Probability of churn class 1",
+    )

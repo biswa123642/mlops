@@ -1,0 +1,31 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Azure Subscription
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
+AZURE_ML_WORKSPACE = os.getenv("AZURE_ML_WORKSPACE")
+AZURE_LOCATION = os.getenv("AZURE_LOCATION")
+
+# Storage
+AZURE_STORAGE_ACCOUNT = os.getenv("AZURE_STORAGE_ACCOUNT")
+AZURE_STORAGE_CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER")
+DATASTORE_NAME = os.getenv("DATASTORE_NAME")
+
+# Azure ML
+AZURE_ML_COMPUTE = os.getenv("AZURE_ML_COMPUTE")
+DATA_ASSET_NAME = os.getenv("DATA_ASSET_NAME")
+DATA_ASSET_VERSION = os.getenv("DATA_ASSET_VERSION")
+MODEL_NAME = os.getenv("MODEL_NAME")
+ENVIRONMENT_NAME = os.getenv("ENVIRONMENT_NAME")
+
+# Container Registry
+AZURE_ACR = os.getenv("AZURE_ACR")
+
+# AKS
+AZURE_AKS = os.getenv("AZURE_AKS")
+
+# Key Vault
+AZURE_KEY_VAULT = os.getenv("AZURE_KEY_VAULT")

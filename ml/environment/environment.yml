@@ -1,0 +1,10 @@
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+
+name: customer-churn-env
+version: "3"
+
+image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+
+conda_file: ./conda.yml
+
+description: Customer churn training and inference environment

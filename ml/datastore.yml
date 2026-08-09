@@ -1,0 +1,12 @@
+$schema: https://azuremlschemas.azureedge.net/latest/azureBlob.schema.json
+
+name: churn_datastore
+
+type: azure_blob
+
+description: >
+  Azure Blob datastore for the customer churn dataset.
+
+account_name: mlstoregs
+
+container_name: mlops

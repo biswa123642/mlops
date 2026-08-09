@@ -1,0 +1,21 @@
+$schema: https://azuremlschemas.azureedge.net/latest/kubernetesOnlineDeployment.schema.json
+name: blue
+type: kubernetes
+endpoint_name: customer-churn-endpoint
+model: azureml:customer-churn-model:2
+environment: azureml:customer-churn-env:3
+code_configuration:
+  code: ../src
+  scoring_script: score.py
+instance_type: defaultinstancetype
+instance_count: 1
+scale_settings:
+  type: default
+request_settings:
+  request_timeout_ms: 90000
+liveness_probe:
+  initial_delay: 30
+  period: 10
+readiness_probe:
+  initial_delay: 30
+  period: 10

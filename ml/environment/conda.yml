@@ -1,0 +1,21 @@
+name: customer-churn-env
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+
+  - pip:
+      - azure-ai-ml
+      - azure-identity
+      - mlflow==2.16.2
+      - azureml-mlflow
+      - azureml-inference-server-http
+      - pandas
+      - numpy
+      - scikit-learn
+      - joblib
+      - python-dotenv

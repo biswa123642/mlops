@@ -32,6 +32,9 @@ jobs:
         push: true
         no-cache: true
         tags: ${{ secrets.DOCKER_REGISTRY }}/backend:${{github.run_number}}
+        build-args: |
+          AZURE_ML_ENDPOINT=$(secrets.AZURE_ML_ENDPOINT)
+          AZURE_ML_API_KEY=$(secrets.AZURE_ML_API_KEY=)
 
     - name: Frontend Build And Push
       uses: docker/build-push-action@v7

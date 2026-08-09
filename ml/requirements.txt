@@ -1,7 +1,9 @@
-mlflow==2.22.1
-pandas==2.2.3
-numpy==2.2.3
-scikit-learn==1.6.1
-azure-identity==1.19.0
-azure-storage-blob==12.25.1
-kubernetes==32.0.1
+azure-ai-ml
+azure-identity
+azure-storage-blob
+mlflow
+pandas
+numpy
+scikit-learn
+joblib
+python-dotenv
