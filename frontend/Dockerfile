@@ -8,11 +8,9 @@ RUN npm install
 
 COPY . .
 
-ARG VITE_API_BASE_URL=https://mlops.altudo.net
-ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+ENV VITE_API_BASE_URL=/api
 
 RUN npm run build
-
 
 FROM nginx:alpine
 
