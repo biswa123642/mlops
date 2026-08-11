@@ -1,16 +1,14 @@
-import hashlib
 import logging
 import os
 import tempfile
-from typing import List
+import uuid
+from typing import Any, Dict, List
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 
 from azure.storage.blob import BlobServiceClient
-
 from openai import AzureOpenAI
-
 from PyPDF2 import PdfReader
 
 from qdrant_client import QdrantClient
@@ -41,16 +39,13 @@ logger = logging.getLogger("vector-service")
 # ============================================================
 
 app = Flask(__name__)
+
 CORS(app)
 
 
 # ============================================================
-# Configuration
+# Azure OpenAI configuration
 # ============================================================
-
-# ------------------------------------------------------------
-# Azure AI Foundry / Azure OpenAI
-# ------------------------------------------------------------
 
 AZURE_FOUNDRY_ENDPOINT = os.environ.get(
     "AZURE_FOUNDRY_ENDPOINT"
@@ -60,20 +55,21 @@ AZURE_FOUNDRY_API_KEY = os.environ.get(
     "AZURE_FOUNDRY_API_KEY"
 )
 
-EMBEDDING_MODEL_NAME = os.environ.get(
-    "EMBEDDING_MODEL_NAME",
-    "text-embedding-ada-002",
+# Your Azure embedding deployment name
+AZURE_EMBEDDING_DEPLOYMENT = os.environ.get(
+    "AZURE_EMBEDDING_DEPLOYMENT",
+    "text-embedding-3-small",
 )
 
 AZURE_API_VERSION = os.environ.get(
     "AZURE_API_VERSION",
-    "2024-12-01-preview",
+    "2024-10-21",
 )
 
 
-# ------------------------------------------------------------
-# Azure Blob Storage
-# ------------------------------------------------------------
+# ============================================================
+# Azure Blob Storage configuration
+# ============================================================
 
 AZURE_STORAGE_ACCOUNT = os.environ.get(
     "AZURE_STORAGE_ACCOUNT"
@@ -94,10 +90,12 @@ AZURE_STORAGE_PREFIX = os.environ.get(
 )
 
 
-# ------------------------------------------------------------
-# Qdrant
-# ------------------------------------------------------------
+# ============================================================
+# Qdrant configuration
+# ============================================================
 
+# Self-hosted Qdrant installed using Helm.
+# No API key is used.
 QDRANT_CLIENT_URL = os.environ.get(
     "QDRANT_CLIENT_URL",
     "http://qdrant:6333",
@@ -109,14 +107,14 @@ COLLECTION_NAME = os.environ.get(
 )
 
 
-# ------------------------------------------------------------
-# Chunking
-# ------------------------------------------------------------
+# ============================================================
+# Chunking configuration
+# ============================================================
 
 CHUNK_SIZE = int(
     os.environ.get(
         "CHUNK_SIZE",
-        "1000",
+        "1200",
     )
 )
 
@@ -124,6 +122,20 @@ CHUNK_OVERLAP = int(
     os.environ.get(
         "CHUNK_OVERLAP",
         "150",
+    )
+)
+
+EMBEDDING_BATCH_SIZE = int(
+    os.environ.get(
+        "EMBEDDING_BATCH_SIZE",
+        "32",
+    )
+)
+
+PORT = int(
+    os.environ.get(
+        "PORT",
+        "5173",
     )
 )
 
@@ -155,7 +167,7 @@ if missing_config:
 
 
 # ============================================================
-# Azure OpenAI / Foundry client
+# Azure OpenAI client
 # ============================================================
 
 openai_client = AzureOpenAI(
@@ -189,6 +201,7 @@ container_client = (
 # Qdrant client
 # ============================================================
 
+# No QDRANT_API_KEY is required.
 qdrant_client = QdrantClient(
     url=QDRANT_CLIENT_URL
 )
@@ -209,10 +222,7 @@ def normalize_text(text: str) -> str:
     lines = []
 
     for line in text.splitlines():
-
-        line = " ".join(
-            line.split()
-        )
+        line = " ".join(line.split())
 
         if line:
             lines.append(line)
@@ -230,11 +240,21 @@ def chunk_text(
     overlap: int = CHUNK_OVERLAP,
 ) -> List[str]:
     """
-    Split text into overlapping chunks.
+    Split text into overlapping character-based chunks.
     """
 
     if not text:
         return []
+
+    if chunk_size <= 0:
+        raise ValueError(
+            "CHUNK_SIZE must be greater than zero"
+        )
+
+    if overlap < 0:
+        raise ValueError(
+            "CHUNK_OVERLAP cannot be negative"
+        )
 
     if overlap >= chunk_size:
         raise ValueError(
@@ -242,12 +262,10 @@ def chunk_text(
         )
 
     chunks = []
-
     start = 0
     text_length = len(text)
 
     while start < text_length:
-
         end = min(
             start + chunk_size,
             text_length,
@@ -267,26 +285,72 @@ def chunk_text(
 
 
 # ============================================================
-# Generate embedding
+# Azure OpenAI embeddings
 # ============================================================
 
-def generate_embedding(
-    text: str,
-) -> List[float]:
+def generate_embeddings(
+    texts: List[str],
+) -> List[List[float]]:
     """
-    Generate an embedding using Azure AI Foundry.
+    Generate embeddings for a batch of text.
     """
+
+    if not texts:
+        return []
 
     response = openai_client.embeddings.create(
-        model=EMBEDDING_MODEL_NAME,
-        input=text,
+        model=AZURE_EMBEDDING_DEPLOYMENT,
+        input=texts,
     )
 
-    return response.data[0].embedding
+    ordered_results = sorted(
+        response.data,
+        key=lambda item: item.index,
+    )
+
+    return [
+        item.embedding
+        for item in ordered_results
+    ]
+
+
+def generate_embeddings_in_batches(
+    texts: List[str],
+) -> List[List[float]]:
+    """
+    Generate embeddings in batches.
+    """
+
+    all_embeddings = []
+
+    for start in range(
+        0,
+        len(texts),
+        EMBEDDING_BATCH_SIZE,
+    ):
+        end = min(
+            start + EMBEDDING_BATCH_SIZE,
+            len(texts),
+        )
+
+        batch = texts[start:end]
+
+        logger.info(
+            "Generating embeddings for chunks %s-%s of %s",
+            start + 1,
+            end,
+            len(texts),
+        )
+
+        embeddings = generate_embeddings(batch)
+
+        all_embeddings.extend(embeddings)
+
+    return all_embeddings
 
 
 # ============================================================
-# Ensure Qdrant collection exists
+# Qdrant collection
 # ============================================================
 
 def ensure_collection(
@@ -294,6 +358,9 @@ def ensure_collection(
 ):
     """
     Create the Qdrant collection if it does not exist.
+
+    The vector dimension cannot be changed after collection
+    creation.
     """
 
     if qdrant_client.collection_exists(
@@ -302,15 +369,16 @@ def ensure_collection(
         return
 
     logger.info(
-        "Creating Qdrant collection '%s'",
+        "Creating Qdrant collection '%s' with size %s",
         COLLECTION_NAME,
+        vector_size,
     )
 
     qdrant_client.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(
             size=vector_size,
-            distance=Distance.DOT,
+            distance=Distance.COSINE,
         ),
     )
 
@@ -320,37 +388,45 @@ def ensure_collection(
 
 
 # ============================================================
-# Generate deterministic point ID
+# Deterministic Qdrant point ID
 # ============================================================
 
 def create_point_id(
     blob_name: str,
+    blob_etag: str,
     chunk_index: int,
 ) -> str:
     """
-    Generate a deterministic ID for a PDF chunk.
+    Generate a deterministic UUID.
+
+    Qdrant supports UUID point IDs.
     """
 
     value = (
-        f"{blob_name}:{chunk_index}"
+        f"{blob_name}:{blob_etag}:{chunk_index}"
     )
 
-    return hashlib.sha256(
-        value.encode("utf-8")
-    ).hexdigest()
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            value,
+        )
+    )
 
 
 # ============================================================
-# Check whether blob version is already indexed
+# Check whether blob version is indexed
 # ============================================================
 
-def blob_already_processed(
+def blob_version_already_processed(
     blob_name: str,
     blob_etag: str,
 ) -> bool:
+    """
+    Check whether the exact blob version is already indexed.
+    """
 
     try:
-
         if not qdrant_client.collection_exists(
             COLLECTION_NAME
         ):
@@ -363,13 +439,13 @@ def blob_already_processed(
                     FieldCondition(
                         key="source_blob",
                         match=MatchValue(
-                            value=blob_name
+                            value=blob_name,
                         ),
                     ),
                     FieldCondition(
                         key="blob_etag",
                         match=MatchValue(
-                            value=blob_etag
+                            value=blob_etag,
                         ),
                     ),
                 ]
@@ -382,7 +458,6 @@ def blob_already_processed(
         return len(points) > 0
 
     except Exception as exc:
-
         logger.warning(
             "Could not check existing vectors for '%s': %s",
             blob_name,
@@ -393,15 +468,16 @@ def blob_already_processed(
 
 
 # ============================================================
-# Delete old vectors for a blob
+# Delete previous versions
 # ============================================================
 
-def delete_existing_blob_points(
+def delete_old_blob_versions(
     blob_name: str,
+    current_etag: str,
 ):
     """
-    Remove vectors belonging to a previous version
-    of the same PDF.
+    Delete old versions after the current version has been
+    successfully inserted.
     """
 
     if not qdrant_client.collection_exists(
@@ -409,57 +485,63 @@ def delete_existing_blob_points(
     ):
         return
 
-    logger.info(
-        "Deleting previous vectors for '%s'",
-        blob_name,
+    old_versions_filter = Filter(
+        must=[
+            FieldCondition(
+                key="source_blob",
+                match=MatchValue(
+                    value=blob_name,
+                ),
+            ),
+        ],
+        must_not=[
+            FieldCondition(
+                key="blob_etag",
+                match=MatchValue(
+                    value=current_etag,
+                ),
+            ),
+        ],
     )
 
     qdrant_client.delete(
         collection_name=COLLECTION_NAME,
-        points_selector=Filter(
-            must=[
-                FieldCondition(
-                    key="source_blob",
-                    match=MatchValue(
-                        value=blob_name
-                    ),
-                )
-            ]
-        ),
+        points_selector=old_versions_filter,
         wait=True,
+    )
+
+    logger.info(
+        "Deleted old Qdrant versions for '%s'",
+        blob_name,
     )
 
 
 # ============================================================
-# Extract text from PDF
+# Extract PDF text
 # ============================================================
 
 def extract_pdf_text(
     file_path: str,
 ) -> str:
     """
-    Extract text from a PDF.
+    Extract embedded text from a PDF.
+
+    Scanned PDFs require OCR.
     """
 
-    reader = PdfReader(
-        file_path
-    )
-
+    reader = PdfReader(file_path)
     pages = []
 
     for page_number, page in enumerate(
         reader.pages
     ):
-
         try:
+            page_text = page.extract_text()
 
-            text = page.extract_text()
-
-            if text:
-                pages.append(text)
+            if page_text:
+                pages.append(page_text)
 
         except Exception as exc:
-
             logger.warning(
                 "Could not extract page %s: %s",
                 page_number,
@@ -477,11 +559,10 @@ def extract_pdf_text(
 
 def process_blob(
     blob_client,
-):
+) -> Dict[str, Any]:
     """
-    Download a PDF from Azure Blob Storage,
-    extract text, create embeddings and store
-    vectors in Qdrant.
+    Download a PDF, extract text, generate embeddings,
+    and store vectors in Qdrant.
     """
 
     blob_name = blob_client.blob_name
@@ -501,11 +582,10 @@ def process_blob(
     # Skip unchanged document
     # --------------------------------------------------------
 
-    if blob_already_processed(
+    if blob_version_already_processed(
         blob_name,
         blob_etag,
     ):
-
         logger.info(
             "Blob already indexed and unchanged: %s",
             blob_name,
@@ -516,9 +596,8 @@ def process_blob(
             "status": "skipped",
         }
 
-
     # --------------------------------------------------------
-    # Download PDF to temporary filesystem
+    # Download PDF
     # --------------------------------------------------------
 
     with tempfile.NamedTemporaryFile(
@@ -541,17 +620,15 @@ def process_blob(
 
         temp_file.flush()
 
-        # ----------------------------------------------------
-        # Extract PDF text
-        # ----------------------------------------------------
-
         text = extract_pdf_text(
             temp_file.name
         )
 
+    # --------------------------------------------------------
+    # Validate extracted text
+    # --------------------------------------------------------
 
     if not text.strip():
-
         logger.warning(
             "No text extracted from '%s'",
             blob_name,
@@ -562,22 +639,17 @@ def process_blob(
             "status": "empty",
         }
 
-
     # --------------------------------------------------------
     # Chunk text
     # --------------------------------------------------------
 
-    chunks = chunk_text(
-        text
-    )
+    chunks = chunk_text(text)
 
     if not chunks:
-
         return {
             "blob": blob_name,
             "status": "empty",
         }
-
 
     logger.info(
         "Created %s chunks for '%s'",
@@ -585,68 +657,50 @@ def process_blob(
         blob_name,
     )
 
-
-    # --------------------------------------------------------
-    # Delete previous version
-    # --------------------------------------------------------
-
-    if qdrant_client.collection_exists(
-        COLLECTION_NAME
-    ):
-
-        delete_existing_blob_points(
-            blob_name
-        )
-
-
     # --------------------------------------------------------
     # Generate embeddings
     # --------------------------------------------------------
 
+    embeddings = generate_embeddings_in_batches(
+        chunks
+    )
+
+    if len(embeddings) != len(chunks):
+        raise RuntimeError(
+            "Embedding count does not match chunk count"
+        )
+
+    if not embeddings:
+        return {
+            "blob": blob_name,
+            "status": "empty",
+        }
+
+    # --------------------------------------------------------
+    # Create Qdrant collection
+    # --------------------------------------------------------
+
+    vector_size = len(embeddings[0])
+
+    ensure_collection(vector_size)
+
+    # --------------------------------------------------------
+    # Build Qdrant points
+    # --------------------------------------------------------
+
     points = []
 
-    for chunk_index, chunk in enumerate(
-        chunks
+    for chunk_index, (
+        chunk,
+        embedding,
+    ) in enumerate(
+        zip(chunks, embeddings)
     ):
-
-        logger.info(
-            "Embedding chunk %s/%s from '%s'",
-            chunk_index + 1,
-            len(chunks),
-            blob_name,
-        )
-
-        embedding = generate_embedding(
-            chunk
-        )
-
-
-        # ----------------------------------------------------
-        # Create Qdrant collection from first embedding
-        # ----------------------------------------------------
-
-        if not qdrant_client.collection_exists(
-            COLLECTION_NAME
-        ):
-
-            ensure_collection(
-                len(embedding)
-            )
-
-
-        # ----------------------------------------------------
-        # Point ID
-        # ----------------------------------------------------
-
         point_id = create_point_id(
             blob_name,
+            blob_etag,
             chunk_index,
         )
-
-
-        # ----------------------------------------------------
-        # Qdrant point
-        # ----------------------------------------------------
 
         points.append(
             PointStruct(
@@ -661,9 +715,8 @@ def process_blob(
             )
         )
 
-
     # --------------------------------------------------------
-    # Store vectors
+    # Insert current document version
     # --------------------------------------------------------
 
     qdrant_client.upsert(
@@ -671,6 +724,24 @@ def process_blob(
         points=points,
         wait=True,
     )
+
+    # --------------------------------------------------------
+    # Delete old versions after successful insert
+    # --------------------------------------------------------
+
+    try:
+        delete_old_blob_versions(
+            blob_name,
+            blob_etag,
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "New version indexed, but old versions could "
+            "not be deleted for '%s': %s",
+            blob_name,
+            exc,
+        )
 
     logger.info(
         "Successfully indexed %s chunks from '%s'",
@@ -682,6 +753,7 @@ def process_blob(
         "blob": blob_name,
         "status": "indexed",
         "chunks": len(points),
+        "embedding_dimension": vector_size,
     }
 
 
@@ -689,9 +761,9 @@ def process_blob(
 # Ingest all PDFs
 # ============================================================
 
-def ingest_documents():
+def ingest_documents() -> List[Dict[str, Any]]:
     """
-    Find PDFs in Azure Blob Storage and index them.
+    List PDF blobs and index them.
     """
 
     logger.info(
@@ -705,30 +777,20 @@ def ingest_documents():
     )
 
     for blob in blobs:
-
         blob_name = blob.name
-
-        # ----------------------------------------------------
-        # Only process PDFs
-        # ----------------------------------------------------
 
         if not blob_name.lower().endswith(
             ".pdf"
         ):
-
             logger.info(
                 "Skipping non-PDF: %s",
                 blob_name,
             )
-
             continue
 
-
         try:
-
             blob_client = (
-                container_client
-                .get_blob_client(
+                container_client.get_blob_client(
                     blob_name
                 )
             )
@@ -737,12 +799,9 @@ def ingest_documents():
                 blob_client
             )
 
-            results.append(
-                result
-            )
+            results.append(result)
 
         except Exception as exc:
-
             logger.exception(
                 "Failed to process '%s'",
                 blob_name,
@@ -768,7 +827,6 @@ def ingest_documents():
     methods=["GET"],
 )
 def health():
-
     return jsonify(
         {
             "status": "healthy",
@@ -785,13 +843,8 @@ def health():
     methods=["GET"],
 )
 def ready():
-
     try:
-
-        # Check Qdrant
         qdrant_client.get_collections()
-
-        # Check Azure Blob Storage
         container_client.get_container_properties()
 
         return jsonify(
@@ -801,7 +854,6 @@ def ready():
         ), 200
 
     except Exception as exc:
-
         logger.error(
             "Readiness check failed: %s",
             exc,
@@ -824,9 +876,12 @@ def ready():
     methods=["POST"],
 )
 def ingest():
+    """
+    This endpoint is called by your backend.
+    No INGEST_TOKEN is required.
+    """
 
     try:
-
         results = ingest_documents()
 
         failed = [
@@ -836,7 +891,6 @@ def ingest():
         ]
 
         if failed:
-
             return jsonify(
                 {
                     "status": "completed_with_errors",
@@ -852,7 +906,6 @@ def ingest():
         ), 200
 
     except Exception as exc:
-
         logger.exception(
             "Document ingestion failed"
         )
@@ -874,7 +927,6 @@ def ingest():
     methods=["GET"],
 )
 def root():
-
     return jsonify(
         {
             "service": "vector-service",
@@ -884,13 +936,12 @@ def root():
 
 
 # ============================================================
-# Application startup
+# Local startup
 # ============================================================
 
 if __name__ == "__main__":
-
     logger.info(
-        "Starting Vector Service"
+        "Starting vector service"
     )
 
     logger.info(
@@ -899,7 +950,17 @@ if __name__ == "__main__":
     )
 
     logger.info(
-        "Blob container: %s/%s",
+        "Qdrant collection: %s",
+        COLLECTION_NAME,
+    )
+
+    logger.info(
+        "Azure embedding deployment: %s",
+        AZURE_EMBEDDING_DEPLOYMENT,
+    )
+
+    logger.info(
+        "Blob storage: %s/%s",
         AZURE_STORAGE_ACCOUNT,
         AZURE_STORAGE_CONTAINER,
     )
@@ -909,12 +970,7 @@ if __name__ == "__main__":
         AZURE_STORAGE_PREFIX,
     )
 
-    logger.info(
-        "Embedding deployment: %s",
-        EMBEDDING_MODEL_NAME,
-    )
-
     app.run(
         host="0.0.0.0",
-        port=5173,
+        port=PORT,
     )
