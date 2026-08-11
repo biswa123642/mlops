@@ -4,7 +4,7 @@ import tempfile
 import uuid
 from typing import Any, Dict, List
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from azure.storage.blob import BlobServiceClient
@@ -48,11 +48,11 @@ CORS(app)
 # ============================================================
 
 AZURE_FOUNDRY_ENDPOINT = os.environ.get(
-    "AZURE_FOUNDRY_ENDPOINT"
+    "AZURE_FOUNDRY_ENDPOINT",
 )
 
 AZURE_FOUNDRY_API_KEY = os.environ.get(
-    "AZURE_FOUNDRY_API_KEY"
+    "AZURE_FOUNDRY_API_KEY",
 )
 
 # Your Azure embedding deployment name
@@ -63,7 +63,7 @@ AZURE_EMBEDDING_DEPLOYMENT = os.environ.get(
 
 AZURE_API_VERSION = os.environ.get(
     "AZURE_API_VERSION",
-    "2024-10-21",
+    "2024-12-01-preview",
 )
 
 
@@ -72,11 +72,11 @@ AZURE_API_VERSION = os.environ.get(
 # ============================================================
 
 AZURE_STORAGE_ACCOUNT = os.environ.get(
-    "AZURE_STORAGE_ACCOUNT"
+    "AZURE_STORAGE_ACCOUNT",
 )
 
 AZURE_STORAGE_ACCESS_KEY = os.environ.get(
-    "AZURE_STORAGE_ACCESS_KEY"
+    "AZURE_STORAGE_ACCESS_KEY",
 )
 
 AZURE_STORAGE_CONTAINER = os.environ.get(
@@ -94,8 +94,8 @@ AZURE_STORAGE_PREFIX = os.environ.get(
 # Qdrant configuration
 # ============================================================
 
-# Self-hosted Qdrant installed using Helm.
-# No API key is used.
+# Self-hosted Qdrant installed with Helm.
+# No QDRANT_API_KEY is used.
 QDRANT_CLIENT_URL = os.environ.get(
     "QDRANT_CLIENT_URL",
     "http://qdrant:6333",
@@ -108,7 +108,7 @@ COLLECTION_NAME = os.environ.get(
 
 
 # ============================================================
-# Chunking configuration
+# Application configuration
 # ============================================================
 
 CHUNK_SIZE = int(
@@ -203,7 +203,7 @@ container_client = (
 
 # No QDRANT_API_KEY is required.
 qdrant_client = QdrantClient(
-    url=QDRANT_CLIENT_URL
+    url=QDRANT_CLIENT_URL,
 )
 
 
@@ -358,9 +358,6 @@ def ensure_collection(
 ):
     """
     Create the Qdrant collection if it does not exist.
-
-    The vector dimension cannot be changed after collection
-    creation.
     """
 
     if qdrant_client.collection_exists(
@@ -383,7 +380,7 @@ def ensure_collection(
     )
 
     logger.info(
-        "Qdrant collection created"
+        "Qdrant collection created",
     )
 
 
@@ -397,9 +394,7 @@ def create_point_id(
     chunk_index: int,
 ) -> str:
     """
-    Generate a deterministic UUID.
-
-    Qdrant supports UUID point IDs.
+    Generate a deterministic UUID for a document chunk.
     """
 
     value = (
@@ -415,7 +410,7 @@ def create_point_id(
 
 
 # ============================================================
-# Check whether blob version is indexed
+# Check existing blob version
 # ============================================================
 
 def blob_version_already_processed(
@@ -423,7 +418,7 @@ def blob_version_already_processed(
     blob_etag: str,
 ) -> bool:
     """
-    Check whether the exact blob version is already indexed.
+    Check whether this exact blob version is indexed.
     """
 
     try:
@@ -468,7 +463,7 @@ def blob_version_already_processed(
 
 
 # ============================================================
-# Delete previous versions
+# Delete old blob versions
 # ============================================================
 
 def delete_old_blob_versions(
@@ -476,7 +471,7 @@ def delete_old_blob_versions(
     current_etag: str,
 ):
     """
-    Delete old versions after the current version has been
+    Delete old versions after the new version has been
     successfully inserted.
     """
 
@@ -517,7 +512,7 @@ def delete_old_blob_versions(
 
 
 # ============================================================
-# Extract PDF text
+# PDF text extraction
 # ============================================================
 
 def extract_pdf_text(
@@ -578,10 +573,6 @@ def process_blob(
         blob_name,
     )
 
-    # --------------------------------------------------------
-    # Skip unchanged document
-    # --------------------------------------------------------
-
     if blob_version_already_processed(
         blob_name,
         blob_etag,
@@ -595,10 +586,6 @@ def process_blob(
             "blob": blob_name,
             "status": "skipped",
         }
-
-    # --------------------------------------------------------
-    # Download PDF
-    # --------------------------------------------------------
 
     with tempfile.NamedTemporaryFile(
         suffix=".pdf",
@@ -624,10 +611,6 @@ def process_blob(
             temp_file.name
         )
 
-    # --------------------------------------------------------
-    # Validate extracted text
-    # --------------------------------------------------------
-
     if not text.strip():
         logger.warning(
             "No text extracted from '%s'",
@@ -638,10 +621,6 @@ def process_blob(
             "blob": blob_name,
             "status": "empty",
         }
-
-    # --------------------------------------------------------
-    # Chunk text
-    # --------------------------------------------------------
 
     chunks = chunk_text(text)
 
@@ -656,10 +635,6 @@ def process_blob(
         len(chunks),
         blob_name,
     )
-
-    # --------------------------------------------------------
-    # Generate embeddings
-    # --------------------------------------------------------
 
     embeddings = generate_embeddings_in_batches(
         chunks
@@ -676,17 +651,9 @@ def process_blob(
             "status": "empty",
         }
 
-    # --------------------------------------------------------
-    # Create Qdrant collection
-    # --------------------------------------------------------
-
     vector_size = len(embeddings[0])
 
     ensure_collection(vector_size)
-
-    # --------------------------------------------------------
-    # Build Qdrant points
-    # --------------------------------------------------------
 
     points = []
 
@@ -715,19 +682,11 @@ def process_blob(
             )
         )
 
-    # --------------------------------------------------------
-    # Insert current document version
-    # --------------------------------------------------------
-
     qdrant_client.upsert(
         collection_name=COLLECTION_NAME,
         points=points,
         wait=True,
     )
-
-    # --------------------------------------------------------
-    # Delete old versions after successful insert
-    # --------------------------------------------------------
 
     try:
         delete_old_blob_versions(
@@ -738,9 +697,8 @@ def process_blob(
     except Exception as exc:
         logger.exception(
             "New version indexed, but old versions could "
-            "not be deleted for '%s': %s",
+            "not be deleted for '%s'",
             blob_name,
-            exc,
         )
 
     logger.info(
@@ -767,13 +725,13 @@ def ingest_documents() -> List[Dict[str, Any]]:
     """
 
     logger.info(
-        "Starting document ingestion"
+        "Starting document ingestion",
     )
 
     results = []
 
     blobs = container_client.list_blobs(
-        name_starts_with=AZURE_STORAGE_PREFIX
+        name_starts_with=AZURE_STORAGE_PREFIX,
     )
 
     for blob in blobs:
@@ -791,12 +749,12 @@ def ingest_documents() -> List[Dict[str, Any]]:
         try:
             blob_client = (
                 container_client.get_blob_client(
-                    blob_name
+                    blob_name,
                 )
             )
 
             result = process_blob(
-                blob_client
+                blob_client,
             )
 
             results.append(result)
@@ -816,6 +774,121 @@ def ingest_documents() -> List[Dict[str, Any]]:
             )
 
     return results
+
+
+# ============================================================
+# Search endpoint
+# ============================================================
+
+@app.route(
+    "/search",
+    methods=["POST"],
+)
+def search():
+    """
+    Generate an embedding for a query and search Qdrant.
+
+    This endpoint is called by the backend service.
+    """
+
+    try:
+        data = request.get_json(
+            silent=True,
+        ) or {}
+
+        query = str(
+            data.get("query", ""),
+        ).strip()
+
+        try:
+            limit = int(
+                data.get("limit", 3),
+            )
+        except (TypeError, ValueError):
+            limit = 3
+
+        if not query:
+            return jsonify(
+                {
+                    "error": "query is required",
+                }
+            ), 400
+
+        if limit < 1:
+            limit = 1
+
+        if limit > 10:
+            limit = 10
+
+        if not qdrant_client.collection_exists(
+            COLLECTION_NAME,
+        ):
+            return jsonify(
+                {
+                    "context": "",
+                    "results": [],
+                }
+            ), 200
+
+        query_embedding = generate_embeddings(
+            [query],
+        )[0]
+
+        search_response = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_embedding,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        results = []
+
+        for point in search_response.points:
+            payload = point.payload or {}
+
+            results.append(
+                {
+                    "score": point.score,
+                    "text": payload.get(
+                        "text",
+                        "",
+                    ),
+                    "source_blob": payload.get(
+                        "source_blob",
+                        "",
+                    ),
+                    "chunk_index": payload.get(
+                        "chunk_index",
+                        0,
+                    ),
+                }
+            )
+
+        context = "\n\n".join(
+            item["text"]
+            for item in results
+            if item.get("text")
+        )
+
+        return jsonify(
+            {
+                "context": context,
+                "results": results,
+            }
+        ), 200
+
+    except Exception as exc:
+        logger.exception(
+            "Vector search failed",
+        )
+
+        return jsonify(
+            {
+                "error": "Vector search failed",
+                "details": str(exc),
+            }
+        ), 500
 
 
 # ============================================================
@@ -845,6 +918,7 @@ def health():
 def ready():
     try:
         qdrant_client.get_collections()
+
         container_client.get_container_properties()
 
         return jsonify(
@@ -878,6 +952,7 @@ def ready():
 def ingest():
     """
     This endpoint is called by your backend.
+
     No INGEST_TOKEN is required.
     """
 
@@ -907,7 +982,7 @@ def ingest():
 
     except Exception as exc:
         logger.exception(
-            "Document ingestion failed"
+            "Document ingestion failed",
         )
 
         return jsonify(
@@ -941,7 +1016,7 @@ def root():
 
 if __name__ == "__main__":
     logger.info(
-        "Starting vector service"
+        "Starting vector service",
     )
 
     logger.info(
