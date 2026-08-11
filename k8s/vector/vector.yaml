@@ -25,18 +25,18 @@ spec:
           protocol: TCP
         env:
         - name: AZURE_FOUNDRY_ENDPOINT
-          value: "YOUR_FOUNDRY_ENDPOINT"
+          value: "https://foundry-llmop.services.ai.azure.com/"
         - name: AZURE_FOUNDRY_API_KEY
           valueFrom:
             secretKeyRef:
               name: azure-foundry-api-key
               key: azure-foundry-api-key.txt
         - name: EMBEDDING_MODEL_NAME
-          value: "YOUR_EMBEDDING_DEPLOYMENT_NAME"
+          value: "text-embedding-3-small"
         - name: AZURE_API_VERSION
           value: "2024-12-01-preview"
         - name: AZURE_STORAGE_ACCOUNT
-          value: "mlstoregs"
+          value: "llmstoregs"
         - name: AZURE_STORAGE_ACCESS_KEY
           valueFrom:
             secretKeyRef:
@@ -47,7 +47,7 @@ spec:
         - name: AZURE_STORAGE_PREFIX
           value: "documents/"
         - name: QDRANT_CLIENT_URL
-          value: "http://qdrant:6333"
+          value: "http://qdrant.qdrant.svc.cluster.local:6333"
         - name: QDRANT_COLLECTION_NAME
           value: "margies_travel_embeddings"
         resources:
