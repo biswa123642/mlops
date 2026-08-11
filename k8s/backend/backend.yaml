@@ -24,11 +24,11 @@ spec:
             protocol: TCP
           env:
           - name: FOUNDRY_ENDPOINT
-            value: ""
+            value: "https://foundry-llmop.services.ai.azure.com/"
           - name: CHAT_DEPLOYMENT
-            value: ""
+            value: "gpt-4o"
           - name: VECTOR_SERVICE_URL
-            value: ""
+            value: "http://vector:5173"
           - name: FOUNDRY_API_KEY
             valueFrom:
               secretKeyRef:
