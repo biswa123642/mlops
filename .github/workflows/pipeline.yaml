@@ -24,6 +24,14 @@ jobs:
         registry: ${{ secrets.DOCKER_REGISTRY }}
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Backend Build And Push
+      uses: docker/build-push-action@v7
+      with:
+        context: ./vector
+        push: true
+        no-cache: true
+        tags: ${{ secrets.DOCKER_REGISTRY }}/vector:${{github.run_number}}
       
     - name: Backend Build And Push
       uses: docker/build-push-action@v7
@@ -40,7 +48,6 @@ jobs:
         push: true
         no-cache: true
         tags: ${{ secrets.DOCKER_REGISTRY }}/frontend:${{github.run_number}}
-
 
   deploy:
     needs:
@@ -81,22 +88,33 @@ jobs:
         curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
         sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
+    - name: Deploy Namespace
+      run: |
+        kubectl create ns llmops --dry-run=client -o yaml | kubectl apply -f -
+
     - name: Deploy Secret 
       working-directory: "k8s/secret"
       run: |
         kustomize build . | kubectl apply -f -
-        kubectl rollout restart deployment secrets -n mlops
+        kubectl rollout restart deployment secrets -n llmops
+
+    - name: Deploy Backend
+      working-directory: "k8s/vector"
+      run: |
+        kustomize edit set image vector=${{ secrets.DOCKER_REGISTRY }}/vector:${{github.run_number}}
+        kustomize build . | kubectl apply -f -
+        kubectl rollout status deployment/vector -n llmops --timeout=180s
     
     - name: Deploy Backend
       working-directory: "k8s/backend"
       run: |
         kustomize edit set image backend=${{ secrets.DOCKER_REGISTRY }}/backend:${{github.run_number}}
         kustomize build . | kubectl apply -f -
-        kubectl rollout status deployment/backend -n mlops --timeout=180s
+        kubectl rollout status deployment/backend -n llmops --timeout=180s
 
     - name: Deploy Frontend
       working-directory: "k8s/frontend"
       run: |
         kustomize edit set image frontend=${{ secrets.DOCKER_REGISTRY }}/frontend:${{github.run_number}}
         kustomize build . | kubectl apply -f -
-        kubectl rollout status deployment/frontend -n mlops --timeout=180s
+        kubectl rollout status deployment/frontend -n llmops --timeout=180s
