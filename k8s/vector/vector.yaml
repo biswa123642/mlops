@@ -31,7 +31,7 @@ spec:
             secretKeyRef:
               name: azure-foundry-api-key
               key: azure-foundry-api-key.txt
-        - name: EMBEDDING_MODEL_NAME
+        - name: AZURE_EMBEDDING_DEPLOYMENT
           value: "text-embedding-3-small"
         - name: AZURE_API_VERSION
           value: "2024-12-01-preview"
