@@ -25,7 +25,7 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Backend Build And Push
+    - name: Vector Build And Push
       uses: docker/build-push-action@v7
       with:
         context: ./vector
@@ -98,7 +98,7 @@ jobs:
         kustomize build . | kubectl apply -f -
         kubectl rollout restart deployment secrets -n llmops
 
-    - name: Deploy Backend
+    - name: Deploy Vector
       working-directory: "k8s/vector"
       run: |
         kustomize edit set image vector=${{ secrets.DOCKER_REGISTRY }}/vector:${{github.run_number}}
