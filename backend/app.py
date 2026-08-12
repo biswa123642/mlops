@@ -1,10 +1,13 @@
-import logging
 import os
+import logging
 
-import requests
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
+
+from openai import AzureOpenAI
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizableTextQuery
 
 
 # ============================================================
@@ -12,273 +15,393 @@ from openai import OpenAI
 # ============================================================
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s"
 )
 
-logger = logging.getLogger("backend-service")
+logger = logging.getLogger("backend")
 
 
 # ============================================================
-# Flask application
+# Flask
 # ============================================================
 
 app = Flask(__name__)
-
 CORS(app)
+
+
+# ============================================================
+# Environment variables
+# ============================================================
+
+FOUNDRY_ENDPOINT = os.getenv("FOUNDRY_ENDPOINT", "").strip()
+FOUNDRY_API_KEY = os.getenv("FOUNDRY_API_KEY", "").strip()
+CHAT_DEPLOYMENT = os.getenv("CHAT_DEPLOYMENT", "").strip()
+
+AZURE_API_VERSION = os.getenv(
+    "AZURE_API_VERSION",
+    "2024-12-01-preview"
+).strip()
+
+AZURE_SEARCH_ENDPOINT = os.getenv(
+    "AZURE_SEARCH_ENDPOINT",
+    ""
+).strip()
+
+AZURE_SEARCH_API_KEY = os.getenv(
+    "AZURE_SEARCH_API_KEY",
+    ""
+).strip()
+
+AZURE_SEARCH_INDEX = os.getenv(
+    "AZURE_SEARCH_INDEX",
+    "rag-llmops"
+).strip()
+
+
+# ============================================================
+# Validate configuration
+# ============================================================
+
+required_variables = {
+    "FOUNDRY_ENDPOINT": FOUNDRY_ENDPOINT,
+    "FOUNDRY_API_KEY": FOUNDRY_API_KEY,
+    "CHAT_DEPLOYMENT": CHAT_DEPLOYMENT,
+    "AZURE_SEARCH_ENDPOINT": AZURE_SEARCH_ENDPOINT,
+    "AZURE_SEARCH_API_KEY": AZURE_SEARCH_API_KEY,
+    "AZURE_SEARCH_INDEX": AZURE_SEARCH_INDEX,
+}
+
+missing_variables = [
+    name for name, value in required_variables.items()
+    if not value
+]
+
+if missing_variables:
+    logger.warning(
+        "Missing environment variables: %s",
+        ", ".join(missing_variables)
+    )
+
+
+# ============================================================
+# Azure AI Foundry client
+# ============================================================
+
+foundry_client = None
+
+if FOUNDRY_ENDPOINT and FOUNDRY_API_KEY:
+    foundry_client = AzureOpenAI(
+        azure_endpoint=FOUNDRY_ENDPOINT,
+        api_key=FOUNDRY_API_KEY,
+        api_version=AZURE_API_VERSION,
+    )
+
+
+# ============================================================
+# Azure AI Search client
+# ============================================================
+
+search_client = None
+
+if AZURE_SEARCH_ENDPOINT and AZURE_SEARCH_API_KEY:
+    search_client = SearchClient(
+        endpoint=AZURE_SEARCH_ENDPOINT,
+        index_name=AZURE_SEARCH_INDEX,
+        credential=AzureKeyCredential(AZURE_SEARCH_API_KEY),
+    )
 
 
 # ============================================================
 # Configuration
 # ============================================================
 
-FOUNDRY_ENDPOINT = os.environ["FOUNDRY_ENDPOINT"]
-
-FOUNDRY_API_KEY = os.environ["FOUNDRY_API_KEY"]
-
-# This must be the chat model deployment name.
-CHAT_DEPLOYMENT = os.environ["CHAT_DEPLOYMENT"]
-
-VECTOR_SERVICE_URL = os.getenv(
-    "VECTOR_SERVICE_URL",
-    "http://vector:5173",
-)
-
-
-# ============================================================
-# Microsoft Foundry client
-# ============================================================
-
-foundry_base_url = (
-    FOUNDRY_ENDPOINT.rstrip("/")
-    + "/openai/v1/"
-)
-
-foundry_client = OpenAI(
-    base_url=foundry_base_url,
-    api_key=FOUNDRY_API_KEY,
-)
+SEARCH_TOP_K = 5
 
 
 # ============================================================
 # Health check
 # ============================================================
 
-@app.route(
-    "/health",
-    methods=["GET"],
-)
+@app.route("/health", methods=["GET"])
 def health():
-    return jsonify(
-        {
-            "status": "healthy",
-        }
-    ), 200
+    return jsonify({
+        "status": "ok",
+        "foundry_configured": bool(foundry_client),
+        "search_configured": bool(search_client),
+        "search_index": AZURE_SEARCH_INDEX,
+    }), 200
 
 
 # ============================================================
-# Chat endpoint
+# Azure AI Search - Hybrid Search
 # ============================================================
 
-@app.route(
-    "/chat",
-    methods=["POST"],
-)
-def chat():
-    try:
-        # ----------------------------------------------------
-        # Read request
-        # ----------------------------------------------------
+def search_documents(question):
+    """
+    Performs hybrid search against Azure AI Search.
 
-        data = request.get_json(
-            silent=True
+    Keyword search:
+        Searches the 'chunk' and other searchable fields.
+
+    Vector search:
+        Uses Azure AI Search's configured vectorizer to
+        convert the question into a vector.
+
+    Vector field:
+        text_vector
+
+    Index:
+        rag-llmops
+    """
+
+    if search_client is None:
+        raise RuntimeError(
+            "Azure AI Search client is not configured."
         )
 
-        if not data:
-            return jsonify(
-                {
-                    "error": "Request body is required.",
-                }
-            ), 400
+    logger.info("Searching Azure AI Search: %s", question)
 
-        user_message = str(
-            data.get("message", "")
-        ).strip()
+    # Azure AI Search performs query vectorization using the
+    # vectorizer configured on the index.
+    vector_query = VectorizableTextQuery(
+        text=question,
+        k_nearest_neighbors=SEARCH_TOP_K,
+        fields="text_vector",
+    )
 
-        if not user_message:
-            return jsonify(
-                {
-                    "error": "message is required.",
-                }
-            ), 400
+    results = search_client.search(
+        search_text=question,
+        vector_queries=[vector_query],
+        top=SEARCH_TOP_K,
+        select=[
+            "chunk_id",
+            "parent_id",
+            "chunk",
+            "title",
+        ],
+    )
 
-        limit = int(
-            data.get("limit", 3)
+    documents = []
+
+    for result in results:
+        chunk = result.get("chunk")
+
+        if not chunk:
+            continue
+
+        documents.append({
+            "chunk_id": result.get("chunk_id"),
+            "parent_id": result.get("parent_id"),
+            "title": result.get("title"),
+            "chunk": chunk,
+            "score": result.get("@search.score"),
+        })
+
+    logger.info(
+        "Azure AI Search returned %d chunks",
+        len(documents)
+    )
+
+    return documents
+
+
+# ============================================================
+# Build context
+# ============================================================
+
+def build_context(documents):
+    """
+    Converts Azure AI Search results into context for the
+    Foundry chat model.
+    """
+
+    if not documents:
+        return ""
+
+    context_parts = []
+
+    for index, document in enumerate(documents, start=1):
+
+        title = document.get("title") or "Unknown document"
+        chunk = document.get("chunk") or ""
+
+        context_parts.append(
+            f"""
+--- Document Chunk {index} ---
+Title: {title}
+
+Content:
+{chunk}
+"""
         )
 
-        if limit < 1 or limit > 10:
-            limit = 3
+    return "\n".join(context_parts)
 
-        # ----------------------------------------------------
-        # Search through vector service
-        # ----------------------------------------------------
 
-        vector_response = requests.post(
-            f"{VECTOR_SERVICE_URL.rstrip('/')}/search",
-            json={
-                "query": user_message,
-                "limit": limit,
-            },
-            timeout=60,
+# ============================================================
+# Chat with Foundry
+# ============================================================
+
+def generate_answer(question, context):
+    """
+    Sends the user's question and retrieved PDF context
+    to the Azure AI Foundry chat deployment.
+    """
+
+    if foundry_client is None:
+        raise RuntimeError(
+            "Azure AI Foundry client is not configured."
         )
 
-        if vector_response.status_code != 200:
-            logger.error(
-                "Vector service returned %s: %s",
-                vector_response.status_code,
-                vector_response.text,
-            )
-
-            return jsonify(
-                {
-                    "error": "Vector service failed.",
-                    "details": vector_response.text,
-                }
-            ), 502
-
-        vector_data = vector_response.json()
-
-        supporting_text = vector_data.get(
-            "context",
-            "",
+    if not context:
+        return (
+            "I could not find relevant information in the "
+            "provided documents."
         )
 
-        results = vector_data.get(
-            "results",
-            [],
-        )
+    system_prompt = """
+You are a document question-answering assistant.
 
-        # ----------------------------------------------------
-        # Generate answer using Foundry chat model
-        # ----------------------------------------------------
+Answer the user's question using ONLY the information
+contained in the provided document context.
 
-        system_prompt = """
-You are a helpful retrieval-augmented generation assistant.
-
-Answer the user's question using only the supporting knowledge.
-
-If the supporting knowledge does not contain enough
-information to answer the question, say:
-"I don't have enough information to answer that."
-
-Do not invent facts.
-Do not use information that is not present in the
-supporting knowledge.
+Rules:
+1. Do not invent information.
+2. Do not use outside knowledge.
+3. If the answer is not present in the document context,
+   clearly say that the information was not found in the
+   provided documents.
+4. Give a concise and accurate answer.
+5. When possible, mention the document title that supports
+   the answer.
 """
 
-        user_prompt = f"""
-Supporting knowledge:
+    user_prompt = f"""
+Document context:
 
-{supporting_text}
+{context}
 
 User question:
-
-{user_message}
+{question}
 """
 
-        response = foundry_client.chat.completions.create(
-            model=CHAT_DEPLOYMENT,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
-            temperature=0.2,
-        )
-
-        if not response.choices:
-            return jsonify(
-                {
-                    "error": "Chat model returned no choices.",
-                }
-            ), 502
-
-        reply = (
-            response.choices[0]
-            .message.content
-            or ""
-        )
-
-        return jsonify(
+    response = foundry_client.chat.completions.create(
+        model=CHAT_DEPLOYMENT,
+        messages=[
             {
-                "model": response.model,
-                "reply": reply,
-                "context": supporting_text,
-                "results": results,
-            }
-        ), 200
-
-    except requests.exceptions.RequestException as exc:
-        logger.exception(
-            "Unable to connect to vector service"
-        )
-
-        return jsonify(
+                "role": "system",
+                "content": system_prompt,
+            },
             {
-                "error": "Unable to connect to vector service.",
-                "details": str(exc),
-            }
-        ), 503
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
+        temperature=0.2,
+    )
 
-    except ValueError as exc:
-        logger.exception(
-            "Invalid request value"
-        )
-
-        return jsonify(
-            {
-                "error": str(exc),
-            }
-        ), 400
-
-    except Exception as exc:
-        logger.exception(
-            "Chat error"
-        )
-
-        return jsonify(
-            {
-                "error": "Internal server error.",
-                "details": str(exc),
-            }
-        ), 500
+    return response.choices[0].message.content
 
 
 # ============================================================
-# Application startup
+# Chat API
+# ============================================================
+
+@app.route("/chat", methods=["POST"])
+def chat():
+
+    try:
+        data = request.get_json(silent=True) or {}
+
+        question = data.get("question", "").strip()
+
+        if not question:
+            return jsonify({
+                "error": "Question is required."
+            }), 400
+
+        logger.info("Received question: %s", question)
+
+        # ----------------------------------------------------
+        # 1. Search Azure AI Search
+        # ----------------------------------------------------
+
+        documents = search_documents(question)
+
+        if not documents:
+            return jsonify({
+                "answer": (
+                    "I could not find relevant information "
+                    "in the provided documents."
+                ),
+                "sources": [],
+            }), 200
+
+        # ----------------------------------------------------
+        # 2. Build context
+        # ----------------------------------------------------
+
+        context = build_context(documents)
+
+        # ----------------------------------------------------
+        # 3. Ask Azure AI Foundry
+        # ----------------------------------------------------
+
+        answer = generate_answer(
+            question,
+            context
+        )
+
+        # ----------------------------------------------------
+        # 4. Return answer + sources
+        # ----------------------------------------------------
+
+        sources = []
+
+        for document in documents:
+            sources.append({
+                "title": document.get("title"),
+                "parent_id": document.get("parent_id"),
+                "chunk_id": document.get("chunk_id"),
+                "score": document.get("score"),
+            })
+
+        return jsonify({
+            "answer": answer,
+            "sources": sources,
+        }), 200
+
+    except Exception as exc:
+
+        logger.exception(
+            "Error while processing /chat request"
+        )
+
+        return jsonify({
+            "error": "Failed to process chat request.",
+            "details": str(exc),
+        }), 500
+
+
+# ============================================================
+# Run application
 # ============================================================
 
 if __name__ == "__main__":
-    logger.info(
-        "Starting backend service"
-    )
 
+    logger.info("Starting backend...")
     logger.info(
-        "Vector service URL: %s",
-        VECTOR_SERVICE_URL,
+        "Azure Search index: %s",
+        AZURE_SEARCH_INDEX
     )
-
     logger.info(
         "Chat deployment: %s",
-        CHAT_DEPLOYMENT,
+        CHAT_DEPLOYMENT
     )
 
     app.run(
         host="0.0.0.0",
         port=5000,
+        debug=False,
     )
